@@ -20,7 +20,10 @@ Disk: about 8 GB free (3+ GB clone, 3.5 GB build).
 
 ## 2. Get the kit
 
-    # where everything for this test lives
+    # where everything lives: an absolute path without spaces. Any parent directory works, but for the real
+    # cutover use a persistent one (e.g. $HOME/zfin-cutover): /tmp can be emptied on reboot or after a few days.
+    # Don't move it after the build: zfin.source.git and zfin.linear-fp.git point at the clone by absolute path
+    # (zfin.linear-fp-lfs.git, the result, is standalone and can go anywhere).
     WORK_DIR=/tmp/zfin-rewrite-test
     mkdir -p $WORK_DIR
 
