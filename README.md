@@ -1,7 +1,7 @@
 # ZFIN history rewrite kit
 
 Temporary repo: the scripts for rewriting github.com/ZFIN/zfin as a linear history with old binaries in Git LFS,
-and the steps to run them on a fresh machine. It is deleted once the conversion is done (step 7).
+and the steps to run them on a fresh machine. It is deleted once the conversion is done (step 8).
 
 The steps below rebuild the linear-history + LFS repo from a fresh clone of github.com/ZFIN/zfin and check it against
 `expected/refs-pre-lfs.txt`: the trial build (2026-10-07 snapshot, pushed to the trial repo) before its LFS step.
@@ -15,13 +15,14 @@ The build is deterministic, so everything upstream hasn't changed since then com
 |---|---|
 | `preflight.py` | Finds in a few seconds what would stop the build (a merge inside a carried branch or on a release's own line, a `release-*` branch not named `release-NNNN`) and lists what will be dropped (branches in `DROP`, tags other than `v*`/`archive/release-*`). `pipeline_fp.sh` runs it first; run it yourself with the GitHub clone to also see dropped refs. |
 | `pipeline_fp.sh` | Runs the pre-flight check, then the whole rewrite in 5 steps (build, carry, LFS, verify, commit map) and writes logs and reports to the results directory. |
-| `build_fp.py` | Step 1. Rebuilds main as a straight line from old main's first-parent commits, each with exactly its original files, author, dates and message; merges become ordinary commits that list what they folded in. Replays each `release-NNNN` on the commit it was cut from and tags it `archive/release-NNNN`. Edit `SKIP` to leave out a release. |
+| `build_fp.py` | Step 1. Rebuilds main as a straight line from old main's first-parent commits, each with exactly its original files, author, dates and message. A merge becomes its PR's own commits when nothing else landed in between (fast-forwardable), one commit with the PR commit's message and author when the PR had one commit, and otherwise one commit that lists what it folded in; every commit on main has the files of a commit that really existed. Replays each `release-NNNN` on the commit it was cut from and tags it `archive/release-NNNN`. Edit `SKIP` to leave out a release. |
 | `carry_refs.py` | Step 2. Re-applies each feature branch (all except `main`, `release-*` and the `DROP` list) onto the new history, and moves each `vNNNN` tag to the new commit with identical files. Edit `DROP` to leave out a branch. |
 | `lfs_candidates.sh` | Step 3. Picks the blobs that go to Git LFS: old `.war`/`.jar`/`.jpi`/`.hpi` files, the old `home/zf_info/` site, and files of 1 MiB or more at paths main no longer has. Nothing in main's latest files is picked, so current main never uses LFS. |
 | `lfs_convert.py` | Step 3. Uses git-filter-repo to replace the picked blobs with LFS pointers in a standalone copy, stores their contents in `lfs/objects/`, and gives each affected commit a `.gitattributes` for its LFS paths. |
 | `verify_lfs.py` | Step 4. Checks every branch and tag path by path: each LFS pointer must restore the original bytes, main must be unchanged, and commit metadata must be identical. |
 | `check_lfs_store.sh` | Step 4. Re-hashes every LFS object and checks that every pointer in history has its object. Also copied into the final repo, to check the NFS archive later. |
 | `make_commit_map.py` | Step 5. Writes `zfin-commit-map.txt`: one line per old commit, `<old id> <new id> <kind>`, for finding old commits in the new history. |
+| `compare_ref.py` | Not run by the pipeline. Compares one commit, branch or tag between the old and new repos, file by file, counting an LFS pointer as identical when it hashes to the original bytes (step 6). |
 | `remap-branch.sh` | Not run by the pipeline; copied into the final repo next to the commit map. Coworkers use it after the cutover to move a branch from their old clone onto the new history. |
 
 `LFS-ARCHIVE.md` is the team's guide to the NFS copy of the LFS objects; the pipeline copies it into the final repo.
@@ -47,7 +48,7 @@ Disk: about 8 GB free (3+ GB clone, 3.5 GB build).
     WORK_DIR=/tmp/zfin-rewrite-test
     mkdir -p $WORK_DIR
 
-    # this repo: README.md, LFS-ARCHIVE.md, scripts/ (10), expected/refs-pre-lfs.txt
+    # this repo: README.md, LFS-ARCHIVE.md, scripts/ (11), expected/refs-pre-lfs.txt
     KIT_DIR=$WORK_DIR/zfin-rewrite-kit
     git clone https://github.com/rtaylorzfin/zfin-rewrite-kit.git $KIT_DIR
 
@@ -124,13 +125,68 @@ changed `home/WEB-INF/lib/agr_curation_api.jar` back to an older version, so one
 another out (still 1,466 objects). Every commit that holds either version gets a new id after the LFS step, so
 the final refs differ from the trial's; that is expected.
 
-## 6. Clean up
+## 6. Check any commit, branch or tag yourself
+
+Every check below compares file contents byte for byte. Pick any refs or commits you like; three ways, from quickest
+to most direct.
+
+**A. Tree ids, before the LFS step.** git names a commit's files by one hash over every path, mode and byte (the
+tree id), so equal tree ids mean identical files. `zfin.linear-fp.git` can read the clone's objects, so ask both:
+
+    # a release: the old branch vs its new tag
+    git -C $MIRROR_REPO rev-parse release-1160^{tree}
+    git -C zfin.linear-fp.git rev-parse archive/release-1160^{tree}
+
+    # a branch or v tag: same name on both sides
+    git -C $MIRROR_REPO rev-parse v1183^{tree}
+    git -C zfin.linear-fp.git rev-parse v1183^{tree}
+
+    # any old commit: look up its new id in the build's map (old id, new id, kind), then compare
+    OLD_COMMIT=005651b144
+    NEW_COMMIT=$(awk -v c=$OLD_COMMIT 'index($1, c) == 1 {print $2; exit}' results/commit-map.txt)
+    git -C $MIRROR_REPO rev-parse $OLD_COMMIT^{tree}
+    git -C zfin.linear-fp.git rev-parse $NEW_COMMIT^{tree}
+
+The map's kind says what to expect. Most commits are `fp`, `fp-from-ff-merge` or `release-NNNN`: same files. Two
+kinds point at a different state on purpose: `side-folded-into-merge` (a commit from a PR branch that was folded
+into its merge; the new commit has the merge's files) and `merge-single` (a PR's one commit, now carrying the merge's
+files). For those, compare the merge commit itself instead.
+
+**B. The final repo (what gets pushed), with `compare_ref.py`.** After the LFS step, old binaries are pointer files,
+so tree ids differ wherever history holds them. `compare_ref.py` checks path by path: a file passes if its bytes are
+the same, or if it is an LFS pointer whose sha256 and size are the original file's.
+
+    python3 -I $KIT_DIR/scripts/compare_ref.py $MIRROR_REPO release-1160 zfin.linear-fp-lfs.git archive/release-1160
+
+    # an old commit: the final ids are in results/zfin-commit-map.txt
+    NEW_COMMIT=$(awk -v c=$OLD_COMMIT 'index($1, c) == 1 {print $2; exit}' results/zfin-commit-map.txt)
+    python3 -I $KIT_DIR/scripts/compare_ref.py $MIRROR_REPO $OLD_COMMIT zfin.linear-fp-lfs.git $NEW_COMMIT
+
+It prints e.g. `release-1160 -> archive/release-1160: 8939 files; 7934 identical, 1005 identical via LFS pointer,
+0 different` and exits 1 if anything differs.
+
+**C. Check out both and diff the folders.** The most direct check; needs git-lfs (`git lfs install` once) and about
+7 GB of disk (a full clone of each side).
+
+    # the old release, from the clone
+    git clone -q $MIRROR_REPO old-checkout
+    git -C old-checkout checkout -q release-1160
+
+    # the new release, with its LFS files restored from the final repo's lfs/objects
+    git clone -q zfin.linear-fp-lfs.git new-checkout
+    git -C new-checkout config lfs.url file://$WORK_DIR/zfin.linear-fp-lfs.git
+    git -C new-checkout checkout -q archive/release-1160
+
+    # no output means identical (.gitattributes is the LFS step's list of LFS paths)
+    diff -r -x .git -x .gitattributes old-checkout new-checkout && echo identical
+
+## 7. Clean up
 
     rm -rf $WORK_DIR
 
 Nothing is written outside `$WORK_DIR`, and nothing is pushed anywhere.
 
-## 7. When the conversion is done: delete this repo
+## 8. When the conversion is done: delete this repo
 
 Once ZFIN/zfin has been replaced with the rewritten history (the cutover), this kit is no longer needed. The
 scripts stay in the analysis folder and the commit map and `remap-branch.sh` in the NFS archive.
