@@ -12,6 +12,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=$(cd "$1" && pwd); OUT=$(mkdir -p "$2" && cd "$2" && pwd); BUILD=$3; FIN=$4
 ts() { date '+%H:%M:%S'; }
 
+echo "$(ts) 0/5 pre-flight check (stops here if the build would fail)"
+python3 -I "$HERE/preflight.py" "$SRC" > "$OUT/preflight-output.txt" || { grep -E '^STOP|problem' "$OUT/preflight-output.txt"; exit 1; }
+tail -1 "$OUT/preflight-output.txt"
+
 echo "$(ts) 1/5 build (main = first-parent line, original trees; releases on their real cut)"
 rm -rf "$BUILD"; git init -q --bare "$BUILD"; BUILD=$(cd "$BUILD" && pwd)
 { echo "$SRC/objects"; cat "$SRC/objects/info/alternates" 2>/dev/null || true; } > "$BUILD/objects/info/alternates"

@@ -13,7 +13,8 @@ The build is deterministic, so everything upstream hasn't changed since then com
 
 | Script | What it does |
 |---|---|
-| `pipeline_fp.sh` | Runs the whole rewrite in 5 steps (build, carry, LFS, verify, commit map) and writes logs and reports to the results directory. |
+| `preflight.py` | Finds in a few seconds what would stop the build (a merge inside a carried branch or on a release's own line, a `release-*` branch not named `release-NNNN`) and lists what will be dropped (branches in `DROP`, tags other than `v*`/`archive/release-*`). `pipeline_fp.sh` runs it first; run it yourself with the GitHub clone to also see dropped refs. |
+| `pipeline_fp.sh` | Runs the pre-flight check, then the whole rewrite in 5 steps (build, carry, LFS, verify, commit map) and writes logs and reports to the results directory. |
 | `build_fp.py` | Step 1. Rebuilds main as a straight line from old main's first-parent commits, each with exactly its original files, author, dates and message; merges become ordinary commits that list what they folded in. Replays each `release-NNNN` on the commit it was cut from and tags it `archive/release-NNNN`. Edit `SKIP` to leave out a release. |
 | `carry_refs.py` | Step 2. Re-applies each feature branch (all except `main`, `release-*` and the `DROP` list) onto the new history, and moves each `vNNNN` tag to the new commit with identical files. Edit `DROP` to leave out a branch. |
 | `lfs_candidates.sh` | Step 3. Picks the blobs that go to Git LFS: old `.war`/`.jar`/`.jpi`/`.hpi` files, the old `home/zf_info/` site, and files of 1 MiB or more at paths main no longer has. Nothing in main's latest files is picked, so current main never uses LFS. |
@@ -46,7 +47,7 @@ Disk: about 8 GB free (3+ GB clone, 3.5 GB build).
     WORK_DIR=/tmp/zfin-rewrite-test
     mkdir -p $WORK_DIR
 
-    # this repo: README.md, LFS-ARCHIVE.md, scripts/ (9), expected/refs-pre-lfs.txt
+    # this repo: README.md, LFS-ARCHIVE.md, scripts/ (10), expected/refs-pre-lfs.txt
     KIT_DIR=$WORK_DIR/zfin-rewrite-kit
     git clone https://github.com/rtaylorzfin/zfin-rewrite-kit.git $KIT_DIR
 
@@ -85,8 +86,15 @@ Keep `scripts/` and `LFS-ARCHIVE.md` side by side: `pipeline_fp.sh` reads `../LF
     # make main the default branch
     git -C zfin.source.git symbolic-ref HEAD refs/heads/main
 
+    # pre-flight check (seconds): STOP lines would make the build fail; DROP lines are left out, check they should be
+    python3 -I $KIT_DIR/scripts/preflight.py zfin.source.git $MIRROR_REPO
+
     # build, carry branches + v tags, LFS, verify, store check, commit map (3-15 min)
     $KIT_DIR/scripts/pipeline_fp.sh zfin.source.git results zfin.linear-fp.git zfin.linear-fp-lfs.git
+
+Fix every STOP before building: rebase the branch, or add it to `DROP` in `scripts/carry_refs.py` (the owner moves it
+afterwards with `remap-branch.sh`). As of 2026-10-09 the check prints `ok` and one DROP line, for the tag
+`main-before-tomcat10-upgrade` (dropped on purpose).
 
 Expected along the way: the verify step ends ok; the store check prints `objects: 1466  corrupt: 0` and
 `pointers in history without an object: 0`; the pack is about 91 MiB. Ignore the final "Run test_lfs_clients.sh,
