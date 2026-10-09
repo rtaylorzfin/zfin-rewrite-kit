@@ -7,6 +7,25 @@ The steps below rebuild the linear-history + LFS repo from a fresh clone of gith
 `expected/refs-pre-lfs.txt`: the trial build (2026-10-07 snapshot, pushed to the trial repo) before its LFS step.
 The build is deterministic, so everything upstream hasn't changed since then comes out identical.
 
+## What's in this repo
+
+`scripts/pipeline_fp.sh` is the only script you run; it calls the others in this order.
+
+| Script | What it does |
+|---|---|
+| `pipeline_fp.sh` | Runs the whole rewrite in 5 steps (build, carry, LFS, verify, commit map) and writes logs and reports to the results directory. |
+| `build_fp.py` | Step 1. Rebuilds main as a straight line from old main's first-parent commits, each with exactly its original files, author, dates and message; merges become ordinary commits that list what they folded in. Replays each `release-NNNN` on the commit it was cut from and tags it `archive/release-NNNN`. Edit `SKIP` to leave out a release. |
+| `carry_refs.py` | Step 2. Re-applies each feature branch (all except `main`, `release-*` and the `DROP` list) onto the new history, and moves each `vNNNN` tag to the new commit with identical files. Edit `DROP` to leave out a branch. |
+| `lfs_candidates.sh` | Step 3. Picks the blobs that go to Git LFS: old `.war`/`.jar`/`.jpi`/`.hpi` files, the old `home/zf_info/` site, and files of 1 MiB or more at paths main no longer has. Nothing in main's latest files is picked, so current main never uses LFS. |
+| `lfs_convert.py` | Step 3. Uses git-filter-repo to replace the picked blobs with LFS pointers in a standalone copy, stores their contents in `lfs/objects/`, and gives each affected commit a `.gitattributes` for its LFS paths. |
+| `verify_lfs.py` | Step 4. Checks every branch and tag path by path: each LFS pointer must restore the original bytes, main must be unchanged, and commit metadata must be identical. |
+| `check_lfs_store.sh` | Step 4. Re-hashes every LFS object and checks that every pointer in history has its object. Also copied into the final repo, to check the NFS archive later. |
+| `make_commit_map.py` | Step 5. Writes `zfin-commit-map.txt`: one line per old commit, `<old id> <new id> <kind>`, for finding old commits in the new history. |
+| `remap-branch.sh` | Not run by the pipeline; copied into the final repo next to the commit map. Coworkers use it after the cutover to move a branch from their old clone onto the new history. |
+
+`LFS-ARCHIVE.md` is the team's guide to the NFS copy of the LFS objects; the pipeline copies it into the final repo.
+`expected/refs-pre-lfs.txt` holds the trial build's refs before its LFS step, for the comparison in step 5.
+
 ## 1. Tools
 
 | Tool | macOS | Linux (Debian/Ubuntu) |
