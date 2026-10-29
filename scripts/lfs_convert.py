@@ -16,9 +16,11 @@ filter.lfs.required=true); restoring an old release's binaries is opt-in (restor
   tree (`/path filter=lfs diff=lfs merge=lfs -text`), so checking out an old tag with git-lfs
   installed restores the real files. Commits without converted files get no .gitattributes,
   so new jars are NOT routed to LFS automatically. (This repo has never had a .gitattributes.)
-- Every other blob that is text (no NUL byte in its first 8000 bytes, git's own test) and contains CRLF has
-  each CRLF replaced by LF, in every commit, so history starts out with LF endings and blame looks through
-  commits that only changed line endings. Blobs moved to LFS keep their original bytes.
+- Every other blob that is text (no NUL byte in its first 8000 bytes, git's own test) gets LF line endings, in
+  every commit: each CRLF becomes LF, and in a file whose lines end in CR alone (classic Mac, no LF anywhere)
+  each CR becomes LF. A lone CR inside a file with LF lines is data and stays. History then starts out with LF
+  endings, and blame looks through commits that only changed line endings. Blobs moved to LFS keep their
+  original bytes.
 - filter-repo writes .git/filter-repo/commit-map (old -> new) as usual.
 """
 import sys, os, shutil, subprocess, hashlib, importlib.util, importlib.machinery
@@ -41,6 +43,11 @@ if not hasattr(fr,'FilteringOptions'):
 
 gitdir=subprocess.run(['git','rev-parse','--absolute-git-dir'],capture_output=True,text=True).stdout.strip()
 lfsdir=os.path.join(gitdir,'lfs','objects')
+def to_lf(data):   # the rewrite's line-ending fix (lfs_convert.py): CRLF -> LF, or classic-Mac CR -> LF
+    if b'\0' in data[:8000]: return data
+    if b'\r\n' in data: return data.replace(b'\r\n', b'\n')
+    if b'\r' in data and b'\n' not in data: return data.replace(b'\r', b'\n')
+    return data
 converted_marks=set()   # filter-repo internal blob ids that now hold a pointer
 nconv=0; nbytes=0; neol=0
 
@@ -54,8 +61,9 @@ def blob_cb(blob,_meta):
             with open(p,'wb') as f: f.write(data)
         blob.data=f"version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {len(data)}\n".encode()
         converted_marks.add(blob.id); nconv+=1; nbytes+=len(data)
-    elif b'\r\n' in blob.data and b'\0' not in blob.data[:8000]:
-        blob.data=blob.data.replace(b'\r\n',b'\n'); neol+=1
+    else:
+        lf=to_lf(blob.data)
+        if lf!=blob.data: blob.data=lf; neol+=1
 
 state={}   # commit (new filter-repo id) -> frozenset of converted paths in its tree
 attr_blob={}  # content -> blob mark
@@ -86,4 +94,4 @@ def commit_cb(commit,_meta):
 args=fr.FilteringOptions.parse_args(['--force','--prune-empty','never','--prune-degenerate','never'],error_on_empty=False)
 filt=fr.RepoFilter(args,blob_callback=blob_cb,commit_callback=None if NOATTR else commit_cb)
 filt.run()
-print(f"converted {nconv} blob occurrences, {nbytes/1048576:.0f} MB into {lfsdir}; CRLF -> LF in {neol} text blobs")
+print(f"converted {nconv} blob occurrences, {nbytes/1048576:.0f} MB into {lfsdir}; LF line endings in {neol} text blobs")

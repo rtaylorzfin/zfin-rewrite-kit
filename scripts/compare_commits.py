@@ -11,7 +11,7 @@ Old commits may be abbreviated. With --sample, N mapped commits are picked at ra
 For each old commit, the map gives its new commit, and every path is compared. A file counts as identical when
 its bytes are the same, or the new file is a Git LFS pointer to the old file's bytes. When it is not, the file is
 classed by the weakest difference that explains it:
-    eol         identical once CRLF line endings are converted to LF
+    eol         identical once line endings are converted to LF (CRLF, or classic-Mac CR, -> LF)
     whitespace  identical once all whitespace is removed (spaces, tabs, line breaks)
     content     a real difference
 eol and whitespace differences are counted (named with --list) but pass; the exit code is 1 only for content, mode or missing/extra
@@ -74,6 +74,12 @@ def lfs_pointer(data):   # (sha256, size) if data is a Git LFS pointer, else Non
     f = dict(l.split(b' ', 1) for l in data.splitlines() if b' ' in l)
     return f[b'oid'].split(b':')[1].decode(), int(f[b'size'])
 
+def to_lf(data):   # the rewrite's line-ending fix (lfs_convert.py): CRLF -> LF, or classic-Mac CR -> LF
+    if b'\0' in data[:8000]: return data
+    if b'\r\n' in data: return data.replace(b'\r\n', b'\n')
+    if b'\r' in data and b'\n' not in data: return data.replace(b'\r', b'\n')
+    return data
+
 WS = re.compile(rb'\s+')
 verdicts = {}   # (old oid, new oid) -> 'same' | 'lfs' | 'eol' | 'whitespace' | 'content'
 def compare_blobs(oo, no):
@@ -81,8 +87,8 @@ def compare_blobs(oo, no):
     if (oo, no) not in verdicts:
         old, new = blob(OLD, oo), blob(NEW, no)
         ptr = lfs_pointer(new)
-        if ptr: v = 'lfs' if ptr in ((hashlib.sha256(d).hexdigest(), len(d)) for d in (old, old.replace(b'\r\n', b'\n'))) else 'content'
-        elif old.replace(b'\r\n', b'\n') == new.replace(b'\r\n', b'\n'): v = 'eol'
+        if ptr: v = 'lfs' if ptr in ((hashlib.sha256(d).hexdigest(), len(d)) for d in (old, to_lf(old))) else 'content'
+        elif to_lf(old) == to_lf(new): v = 'eol'
         elif WS.sub(b'', old) == WS.sub(b'', new): v = 'whitespace'
         else: v = 'content'
         verdicts[oo, no] = v

@@ -90,7 +90,7 @@ Fix every STOP before building: rebase the branch, or add it to `DROP` in `scrip
 afterwards with `remap-branch.sh`). As of 2026-10-09 the check prints `ok` and one DROP line, for the tag
 `main-before-tomcat10-upgrade` (dropped on purpose).
 
-Expected along the way (as of 2026-10-29): step 3 converts 1485 blobs to LFS and CRLF -> LF in about 1140 text blobs;
+Expected along the way (as of 2026-10-29): step 3 converts 1485 blobs to LFS and gives about 1170 text blobs LF line endings;
 the verify step ends ok; the store check prints `objects: 1485  corrupt: 0` and `pointers in history without an
 object: 0`; the pack is about 61 MiB.
 
@@ -203,10 +203,13 @@ About 290 files in main (Java, JSP, SQL, CSV, XML, ...) have CRLF line endings, 
 and LF over the years. Each flip made `git blame` credit every line of the file to whichever commit flipped it
 (e.g. #1295, the tomcat10 merge, for 1,733 lines of `HibernateExpressionRepository.java`), so the files were never
 fixed in place. The LFS step fixes them in history instead: in every commit, each text file's CRLF becomes LF.
+A few files (4 Java files, `term_stopwords.txt`, some old load CSVs) end their lines in CR alone, the classic-Mac
+format, which git treats as binary and as one long line; their CRs become LF too.
 Then no commit changes line endings, and blame credits each line to the commit that really wrote it.
 
 - Text means no NUL byte in the first 8000 bytes (git's own test). Binary files are untouched, and so are files
-  moved to LFS (they keep their original bytes). Only CRLF pairs change; a lone CR is left alone.
+  moved to LFS (they keep their original bytes). A lone CR inside a file whose lines end in LF is data (e.g. an
+  empty field in `1085/ghost/drclonedis`) and is left alone.
 - Every commit is kept, even one that only changed line endings and is now empty, so the commit map stays one to one.
 - Liquibase checksums don't change: 4.30's checksums for `loadData` CSVs, `sql`/`sqlFile` and XML changelogs all
   ignore line endings, so databases with these changesets applied validate as before.
