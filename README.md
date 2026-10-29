@@ -23,6 +23,7 @@ The build is deterministic, so everything upstream hasn't changed since then com
 | `check_lfs_store.sh` | Step 4. Re-hashes every LFS object and checks that every pointer in history has its object. Also copied into the final repo, to check the NFS archive later. |
 | `make_commit_map.py` | Step 5. Writes `zfin-commit-map.txt`: one line per old commit, `<old id> <new id> <kind>`, for finding old commits in the new history. |
 | `compare_ref.py` | Not run by the pipeline. Compares one commit, branch or tag between the old and new repos, file by file, counting an LFS pointer as identical when it hashes to the original bytes (step 6). |
+| `compare_commits.py` | Not run by the pipeline; copied into the final repo next to the commit map. Looks up any old commits (or a random sample) in the commit map and compares each with its new commit, file by file, telling apart identical files, differences only in line endings or whitespace, and real differences (step 6, check D). |
 | `remap-branch.sh` | Not run by the pipeline; copied into the final repo next to the commit map. Coworkers use it after the cutover to move a branch from their old clone onto the new history. |
 
 `LFS-ARCHIVE.md` is the team's guide to the NFS copy of the LFS objects; the pipeline copies it into the final repo.
@@ -37,13 +38,13 @@ The build is deterministic, so everything upstream hasn't changed since then com
 | git-filter-repo (2.47.0 used for `expected/`) | `brew install git-filter-repo` | `pip install --user git-filter-repo` |
 
 Check: `git --version; python3 --version; git filter-repo --version`.
-Disk: about 8 GB free (3+ GB clone, 3.5 GB build).
+Disk: about 10 GB free (3 GB clone, 2 GB build input, 3.5 GB build).
 
 ## 2. Get the kit
 
     # where everything lives: an absolute path without spaces. Any parent directory works, but for the real
     # cutover use a persistent one (e.g. $HOME/zfin-cutover): /tmp can be emptied on reboot or after a few days.
-    # Don't move it after the build: zfin.source.git and zfin.linear-fp.git point at the clone by absolute path
+    # Don't move it after the build: zfin.linear-fp.git reads zfin.source.git's objects by absolute path
     # (zfin.linear-fp-lfs.git, the result, is standalone and can go anywhere).
     WORK_DIR=/tmp/zfin-rewrite-test
     mkdir -p $WORK_DIR
@@ -67,21 +68,13 @@ Keep `scripts/` and `LFS-ARCHIVE.md` side by side: `pipeline_fp.sh` reads `../LF
     # empty repo for the build input
     git init -q --bare zfin.source.git
 
-    # read objects straight from the clone instead of copying them (the clone is not modified)
-    echo "$MIRROR_REPO/objects" > zfin.source.git/objects/info/alternates
+    # all branches (main, release-1139 onward, feature branches) except master: the unrelated 1998-2021 CVS/SVN history
+    git -C zfin.source.git fetch -q --no-tags $MIRROR_REPO 'refs/heads/*:refs/heads/*' '^refs/heads/master'
 
-    # all branches: main, release-1139..1185, feature branches (and master, removed next)
-    git -C zfin.source.git fetch -q --no-tags $MIRROR_REPO 'refs/heads/*:refs/heads/*'
+    # releases 1124-1138 exist only as archive/release-NNNN tags: fetch each as a release-NNNN branch
+    git -C zfin.source.git fetch -q --no-tags $MIRROR_REPO 'refs/tags/archive/release-*:refs/heads/release-*'
 
-    # drop master: the unrelated 1998-2021 CVS/SVN history
-    git -C zfin.source.git update-ref -d refs/heads/master
-
-    # releases 1124-1138 exist only as archive/release-NNNN tags: make a release-NNNN branch at each
-    for tag in $(git -C $MIRROR_REPO for-each-ref --format='%(refname:short)' 'refs/tags/archive/release-*'); do
-        git -C zfin.source.git update-ref refs/heads/${tag#archive/} $(git -C $MIRROR_REPO rev-parse $tag^{commit})
-    done
-
-    # the v1175..v1185 tags of the GitHub Releases (no other tags are kept)
+    # the vNNNN tags of the GitHub Releases, v1175 onward (no other tags are kept)
     git -C zfin.source.git fetch -q --no-tags $MIRROR_REPO 'refs/tags/v*:refs/tags/v*'
 
     # make main the default branch
@@ -131,7 +124,7 @@ Every check below compares file contents byte for byte. Pick any refs or commits
 to most direct.
 
 **A. Tree ids, before the LFS step.** git names a commit's files by one hash over every path, mode and byte (the
-tree id), so equal tree ids mean identical files. `zfin.linear-fp.git` can read the clone's objects, so ask both:
+tree id), so equal tree ids mean identical files. `zfin.linear-fp.git` can read the source's objects, so ask both:
 
     # a release: the old branch vs its new tag
     git -C $MIRROR_REPO rev-parse release-1160^{tree}
@@ -179,6 +172,27 @@ It prints e.g. `release-1160 -> archive/release-1160: 8939 files; 7934 identical
 
     # no output means identical (.gitattributes is the LFS step's list of LFS paths)
     diff -r -x .git -x .gitattributes old-checkout new-checkout && echo identical
+
+**D. Any old commits, through the commit map, ignoring whitespace.** For anyone who wants to see for themselves that
+the rewrite kept their work: name old commits (abbreviated ids are fine) or ask for a random sample, and
+`compare_commits.py` looks each one up in the map and compares it with its new commit. A file passes when its bytes
+are the same or it is an LFS pointer to the old bytes; otherwise it is classed as differing only in line endings
+(CRLF vs LF), only in whitespace, or in content. Only content differences (and missing, extra or mode-changed files)
+fail the check.
+
+    # here: the clone and the final repo, with the build's map
+    python3 -I $KIT_DIR/scripts/compare_commits.py results/zfin-commit-map.txt $MIRROR_REPO zfin.linear-fp-lfs.git 005651b144 4a34ef0733
+    python3 -I $KIT_DIR/scripts/compare_commits.py results/zfin-commit-map.txt $MIRROR_REPO zfin.linear-fp-lfs.git --sample 50
+
+    # after the cutover, in your own old clone: fetch the new history next to the old one, then pass the clone twice
+    git fetch https://github.com/ZFIN/zfin.git 'refs/heads/main:refs/remotes/rewritten/main'
+    python3 -I compare_commits.py zfin-commit-map.txt . . <old commit> ...
+
+Each commit gets one line, e.g. `4a34ef0733 -> 1d21f45d9e [fp] ok: 9051 files; 8757 identical, 0 via LFS pointer,
+294 line endings only, 0 whitespace only, 0 different`; add `--list` to name the files behind the line-ending and
+whitespace counts. The run exits 1 if any commit has a real difference. Commits of kind `side-folded-into-merge` and
+`merge-single` carry their merge's files on purpose (see A), so their differences are reported but don't fail the
+run; commits mapped to `-` were dropped as empty and are skipped.
 
 ## 7. Clean up
 

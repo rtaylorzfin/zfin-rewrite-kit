@@ -63,14 +63,17 @@ Each object's file name is its SHA-256, so the archive can verify itself:
 A copy of the script sits next to this file (also in `git-vault/analysis-2026-10-07/scripts/`). It re-hashes every object and confirms that every LFS
 pointer anywhere in history has its object.
 
-## Commit map and remap-branch.sh
+## Commit map, remap-branch.sh and compare_commits.py
 
-Every commit ID changed in the rewrite. Two files next to this one help with that:
+Every commit ID changed in the rewrite. Three files next to this one help with that:
 
 - `zfin-commit-map.txt`: one line per old commit, `<old id> <new id> <kind>`. Find an old ID with
   `grep '^<old-id>' zfin-commit-map.txt`.
 - `remap-branch.sh`: moves a branch made on the old history onto the new one. Run it in an old clone;
   its header and `COWORKER-GUIDE.md` explain how.
+- `compare_commits.py`: shows that old commits kept their files. In an old clone with the new history fetched,
+  `python3 -I compare_commits.py zfin-commit-map.txt . . <old id> ...` (or `--sample 50`) compares each old commit
+  with its new one, file by file, and tells apart differences only in line endings or whitespace from real ones.
 
 ## You don't need git-lfs at all
 

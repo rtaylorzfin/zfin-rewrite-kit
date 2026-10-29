@@ -40,6 +40,6 @@ git -C "$FIN" count-objects -vH | grep size-pack
 
 echo "$(ts) 5/5 commit map + archive files"
 python3 -I "$HERE/make_commit_map.py" "$SRC" "$BUILD" "$FIN" "$OUT/commit-map.txt" "$OUT/carry-commit-map.txt" "$OUT/zfin-commit-map.txt"
-cp "$HERE/check_lfs_store.sh" "$HERE/remap-branch.sh" "$OUT/zfin-commit-map.txt" "$FIN/"
+cp "$HERE/check_lfs_store.sh" "$HERE/remap-branch.sh" "$HERE/compare_commits.py" "$OUT/zfin-commit-map.txt" "$FIN/"
 sed 's/__ARCHIVE_NAME__/zfin.lfs.git/g' "$HERE/../LFS-ARCHIVE.md" > "$FIN/LFS-ARCHIVE.md"
 echo "$(ts) done. Run test_lfs_clients.sh, then archive $FIN to cell:/research/zcentral/Vault/git/zfin.lfs.git."
