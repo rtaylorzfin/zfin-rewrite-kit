@@ -5,7 +5,8 @@ Usage:
 
 Path by path, a file counts as identical when it has the same blob id (same bytes) in both, or when the new
 file is a Git LFS pointer whose sha256 and size are those of the old file's bytes (what git-lfs restores on
-checkout). The .gitattributes that the LFS step adds to old commits is reported but not counted as a difference.
+checkout). A file that is the old text with each CRLF replaced by LF (the rewrite's line-ending fix) is counted
+separately and also passes. The .gitattributes that the LFS step adds to old commits is reported but not counted as a difference.
 Exit code 0 when every file is identical.
 """
 import hashlib, subprocess as sp, sys
@@ -35,7 +36,7 @@ def lfs_pointer(data):   # (sha256, size) if data is a Git LFS pointer, else Non
     return f[b'oid'].split(b':')[1].decode(), int(f[b'size'])
 
 old, new = tree(OLD, OLD_REF), tree(NEW, NEW_REF)
-same = via_lfs = 0; problems = []
+same = via_lfs = eol = 0; problems = []
 for path in sorted(set(old) | set(new)):
     if path == '.gitattributes' and path not in old:
         print('note: .gitattributes added by the LFS step (lists the LFS paths; not in the original)'); continue
@@ -44,12 +45,12 @@ for path in sorted(set(old) | set(new)):
     (om, oo), (nm, no) = old[path], new[path]
     if om != nm: problems.append(f'mode differs:   {path} ({om} vs {nm})'); continue
     if oo == no: same += 1; continue
-    ptr = lfs_pointer(blob(NEW, no))
-    data = blob(OLD, oo) if ptr else b''
+    new_data = blob(NEW, no); ptr = lfs_pointer(new_data); data = blob(OLD, oo)
     if ptr and ptr == (hashlib.sha256(data).hexdigest(), len(data)): via_lfs += 1
+    elif not ptr and data.replace(b'\r\n', b'\n') == new_data: eol += 1
     else: problems.append(f'content differs: {path}')
 
 print(f'{OLD_REF} -> {NEW_REF}: {len(old)} files; {same} identical, {via_lfs} identical via LFS pointer, '
-      f'{len(problems)} different')
+      f'{eol} identical apart from CRLF -> LF, {len(problems)} different')
 for p in problems[:20]: print('  ' + p)
 sys.exit(1 if problems else 0)

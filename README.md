@@ -1,7 +1,7 @@
 # ZFIN history rewrite kit
 
-Temporary repo: the scripts for rewriting github.com/ZFIN/zfin as a linear history with old binaries in Git LFS,
-and the steps to run them on a fresh machine. It is deleted once the conversion is done (step 8).
+Temporary repo: the scripts for rewriting github.com/ZFIN/zfin as a linear history with old binaries in Git LFS
+and LF line endings throughout, and the steps to run them on a fresh machine. It is deleted once the conversion is done (step 8).
 
 The steps below rebuild the linear-history + LFS repo from a fresh clone of github.com/ZFIN/zfin and check it against
 `expected/refs-pre-lfs.txt`: the trial build (2026-10-07 snapshot, pushed to the trial repo) before its LFS step.
@@ -18,11 +18,11 @@ The build is deterministic, so everything upstream hasn't changed since then com
 | `build_fp.py` | Step 1. Rebuilds main as a straight line from old main's first-parent commits, each with exactly its original files, author, dates and message. A merge becomes its PR's own commits when nothing else landed in between (fast-forwardable), one commit with the PR commit's message and author when the PR had one commit, and otherwise one commit that lists what it folded in; every commit on main has the files of a commit that really existed. Replays each `release-NNNN` on the commit it was cut from and tags it `archive/release-NNNN`. Edit `SKIP` to leave out a release. |
 | `carry_refs.py` | Step 2. Re-applies each feature branch (all except `main`, `release-*` and the `DROP` list) onto the new history, and moves each `vNNNN` tag to the new commit with identical files. Edit `DROP` to leave out a branch. |
 | `lfs_candidates.sh` | Step 3. Picks the blobs that go to Git LFS: old `.war`/`.jar`/`.jpi`/`.hpi` files, the old `home/zf_info/` site, and files of 1 MiB or more at paths main no longer has. Nothing in main's latest files is picked, so current main never uses LFS. |
-| `lfs_convert.py` | Step 3. Uses git-filter-repo to replace the picked blobs with LFS pointers in a standalone copy, stores their contents in `lfs/objects/`, and gives each affected commit a `.gitattributes` for its LFS paths. |
-| `verify_lfs.py` | Step 4. Checks every branch and tag path by path: each LFS pointer must restore the original bytes, main must be unchanged, and commit metadata must be identical. |
+| `lfs_convert.py` | Step 3. Uses git-filter-repo, on a standalone copy, to replace the picked blobs with LFS pointers (their contents go to `lfs/objects/`, and each affected commit gets a `.gitattributes` for its LFS paths) and to replace CRLF with LF in every other text file, in every commit (see "Line endings" below). |
+| `verify_lfs.py` | Step 4. Checks every branch and tag path by path: each file must be unchanged, the same text with LF endings, or an LFS pointer that restores the original bytes; main must have no LFS pointers and no CRLF left; commit metadata must be identical. |
 | `check_lfs_store.sh` | Step 4. Re-hashes every LFS object and checks that every pointer in history has its object. Also copied into the final repo, to check the NFS archive later. |
 | `make_commit_map.py` | Step 5. Writes `zfin-commit-map.txt`: one line per old commit, `<old id> <new id> <kind>`, for finding old commits in the new history. |
-| `compare_ref.py` | Not run by the pipeline. Compares one commit, branch or tag between the old and new repos, file by file, counting an LFS pointer as identical when it hashes to the original bytes (step 6). |
+| `compare_ref.py` | Not run by the pipeline. Compares one commit, branch or tag between the old and new repos, file by file, counting an LFS pointer as identical when it hashes to the original bytes, and CRLF -> LF files separately (step 6). |
 | `compare_commits.py` | Not run by the pipeline; copied into the final repo next to the commit map. Looks up any old commits (or a random sample) in the commit map and compares each with its new commit, file by file, telling apart identical files, differences only in line endings or whitespace, and real differences (step 6, check D). |
 | `remap-branch.sh` | Not run by the pipeline; copied into the final repo next to the commit map. Coworkers use it after the cutover to move a branch from their old clone onto the new history. |
 
@@ -90,9 +90,9 @@ Fix every STOP before building: rebase the branch, or add it to `DROP` in `scrip
 afterwards with `remap-branch.sh`). As of 2026-10-09 the check prints `ok` and one DROP line, for the tag
 `main-before-tomcat10-upgrade` (dropped on purpose).
 
-Expected along the way: the verify step ends ok; the store check prints `objects: 1466  corrupt: 0` and
-`pointers in history without an object: 0`; the pack is about 91 MiB. Ignore the final "Run test_lfs_clients.sh,
-then archive" hint: the client test is not in the kit, and this test build is not archived.
+Expected along the way (as of 2026-10-29): step 3 converts 1485 blobs to LFS and CRLF -> LF in about 1140 text blobs;
+the verify step ends ok; the store check prints `objects: 1485  corrupt: 0` and `pointers in history without an
+object: 0`; the pack is about 61 MiB.
 
 ## 5. Compare with the trial build
 
@@ -120,8 +120,9 @@ the final refs differ from the trial's; that is expected.
 
 ## 6. Check any commit, branch or tag yourself
 
-Every check below compares file contents byte for byte. Pick any refs or commits you like; three ways, from quickest
-to most direct.
+Every check below compares file contents byte for byte, apart from line endings: the LFS step also replaced CRLF with
+LF (see "Line endings" below), and B, C and D say which files differ only in that. Pick any refs or commits you like;
+four ways, from quickest to most direct.
 
 **A. Tree ids, before the LFS step.** git names a commit's files by one hash over every path, mode and byte (the
 tree id), so equal tree ids mean identical files. `zfin.linear-fp.git` can read the source's objects, so ask both:
@@ -145,9 +146,10 @@ kinds point at a different state on purpose: `side-folded-into-merge` (a commit 
 into its merge; the new commit has the merge's files) and `merge-single` (a PR's one commit, now carrying the merge's
 files). For those, compare the merge commit itself instead.
 
-**B. The final repo (what gets pushed), with `compare_ref.py`.** After the LFS step, old binaries are pointer files,
-so tree ids differ wherever history holds them. `compare_ref.py` checks path by path: a file passes if its bytes are
-the same, or if it is an LFS pointer whose sha256 and size are the original file's.
+**B. The final repo (what gets pushed), with `compare_ref.py`.** After the LFS step, old binaries are pointer files
+and CRLF text files have LF endings, so tree ids differ wherever history holds either. `compare_ref.py` checks path by
+path: a file passes if its bytes are the same, if it is an LFS pointer whose sha256 and size are the original file's,
+or if it is the original text with each CRLF replaced by LF.
 
     python3 -I $KIT_DIR/scripts/compare_ref.py $MIRROR_REPO release-1160 zfin.linear-fp-lfs.git archive/release-1160
 
@@ -155,8 +157,8 @@ the same, or if it is an LFS pointer whose sha256 and size are the original file
     NEW_COMMIT=$(awk -v c=$OLD_COMMIT 'index($1, c) == 1 {print $2; exit}' results/zfin-commit-map.txt)
     python3 -I $KIT_DIR/scripts/compare_ref.py $MIRROR_REPO $OLD_COMMIT zfin.linear-fp-lfs.git $NEW_COMMIT
 
-It prints e.g. `release-1160 -> archive/release-1160: 8939 files; 7934 identical, 1005 identical via LFS pointer,
-0 different` and exits 1 if anything differs.
+It prints e.g. `release-1160 -> archive/release-1160: 8939 files; 7615 identical, 1028 identical via LFS pointer,
+296 identical apart from CRLF -> LF, 0 different` and exits 1 if anything differs.
 
 **C. Check out both and diff the folders.** The most direct check; needs git-lfs (`git lfs install` once) and about
 7 GB of disk (a full clone of each side).
@@ -170,8 +172,9 @@ It prints e.g. `release-1160 -> archive/release-1160: 8939 files; 7934 identical
     git -C new-checkout config lfs.url file://$WORK_DIR/zfin.linear-fp-lfs.git
     git -C new-checkout checkout -q archive/release-1160
 
-    # no output means identical (.gitattributes is the LFS step's list of LFS paths)
-    diff -r -x .git -x .gitattributes old-checkout new-checkout && echo identical
+    # no output means identical apart from line endings (.gitattributes is the LFS step's list of LFS paths);
+    # drop --strip-trailing-cr to see the files whose CRLF became LF
+    diff -r --strip-trailing-cr -x .git -x .gitattributes old-checkout new-checkout && echo identical
 
 **D. Any old commits, through the commit map, ignoring whitespace.** For anyone who wants to see for themselves that
 the rewrite kept their work: name old commits (abbreviated ids are fine) or ask for a random sample, and
@@ -194,6 +197,30 @@ whitespace counts. The run exits 1 if any commit has a real difference. Commits 
 `merge-single` carry their merge's files on purpose (see A), so their differences are reported but don't fail the
 run; commits mapped to `-` were dropped as empty and are skipped.
 
+## Line endings
+
+About 290 files in main (Java, JSP, SQL, CSV, XML, ...) have CRLF line endings, and some files flipped between CRLF
+and LF over the years. Each flip made `git blame` credit every line of the file to whichever commit flipped it
+(e.g. #1295, the tomcat10 merge, for 1,733 lines of `HibernateExpressionRepository.java`), so the files were never
+fixed in place. The LFS step fixes them in history instead: in every commit, each text file's CRLF becomes LF.
+Then no commit changes line endings, and blame credits each line to the commit that really wrote it.
+
+- Text means no NUL byte in the first 8000 bytes (git's own test). Binary files are untouched, and so are files
+  moved to LFS (they keep their original bytes). Only CRLF pairs change; a lone CR is left alone.
+- Every commit is kept, even one that only changed line endings and is now empty, so the commit map stays one to one.
+- Liquibase checksums don't change: 4.30's checksums for `loadData` CSVs, `sql`/`sqlFile` and XML changelogs all
+  ignore line endings, so databases with these changesets applied validate as before.
+- `gradlew.bat` gets LF too. Windows runs it fine; to check it out with CRLF anyway, add the `.gitattributes` below.
+- After the cutover, add a `.gitattributes` to main (an ordinary pull request) so new CRLF files are converted on
+  commit and nobody brings the problem back:
+
+      * text=auto eol=lf
+      *.bat text eol=crlf
+
+- `remap-branch.sh` moves branches made on the old history across the change without conflicts: lines a coworker
+  added to a CRLF file land with LF endings. A file the branch adds keeps its own endings (the `.gitattributes`
+  above converts it on its next commit).
+
 ## 7. Clean up
 
     rm -rf $WORK_DIR
@@ -202,7 +229,8 @@ Nothing is written outside `$WORK_DIR`, and nothing is pushed anywhere.
 
 ## 8. When the conversion is done: delete this repo
 
-Once ZFIN/zfin has been replaced with the rewritten history (the cutover), this kit is no longer needed. The
+Once ZFIN/zfin has been replaced with the rewritten history (the cutover), this kit is no longer needed. Deleting it is
+tracked in ZFIN-10584 (due 2027-01-04); before deleting, attach a zip of the final kit to ZFIN-10473. The
 scripts stay in the analysis folder and the commit map and `remap-branch.sh` in the NFS archive.
 
     # deleting needs the delete_repo scope (one time)

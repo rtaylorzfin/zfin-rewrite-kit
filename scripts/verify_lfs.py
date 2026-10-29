@@ -6,11 +6,12 @@ Usage (cwd = the converted repo):
 <pre-refs.txt> holds "<refname> <object>" lines saved just before conversion (all tags and branches).
 For every ref's tree, every path must be either
   - the identical blob, or
+  - the original text with each CRLF replaced by LF (lfs_convert.py's line-ending fix), or
   - an LFS pointer whose object exists in lfs/objects and hashes (git hash-object) back to
     the original blob id, with the path listed in that tree's root .gitattributes.
 Also: .gitattributes lists exactly the pointer paths, the commit count and per-commit
-author/committer/message are unchanged (modulo filter-repo's
-old->new hash translation inside messages), and main's tree is unchanged (no binaries at the tip were converted).
+author/committer/message are unchanged (modulo filter-repo's old->new hash translation inside messages),
+main has no LFS pointers (no binaries at the tip were converted), and no text file in main still has CRLF.
 """
 import subprocess as sp, sys, os
 pre, prerefs = sys.argv[1], sys.argv[2]
@@ -29,9 +30,9 @@ def tree(ref, repo=None):
             out[p] = (mode, oid.decode())
     return out
 
-def batch(oids):
-    """Return {oid: content} for small blobs via cat-file --batch."""
-    data = git('cat-file', '--batch', inp=''.join(o + '\n' for o in oids).encode())
+def batch(oids, repo=None):
+    """Return {oid: content} for the blobs via cat-file --batch."""
+    data = git('cat-file', '--batch', inp=''.join(o + '\n' for o in oids).encode(), repo=repo)
     res = {}; i = 0
     for o in oids:
         nl = data.index(b'\n', i); hdr = data[i:nl].split(); size = int(hdr[2])
@@ -39,7 +40,10 @@ def batch(oids):
     return res
 
 refs = [l.split() for l in open(prerefs)]
-fails = []; hashed = {}; nptr_total = 0; checked = 0
+def is_text(data): return b'\0' not in data[:8000]
+def is_pointer(data): return data.startswith(b'version https://git-lfs.github.com/spec/v1\n') and len(data) < 200
+eol_ok = {}   # (old blob, new blob) -> True if new is old with CRLF -> LF; shared by every ref
+fails = []; hashed = {}; nptr_total = 0; neol_total = 0; checked = 0
 for ref, _ in refs:
     if not (ref.startswith('refs/tags/') or ref.startswith('refs/heads/')): continue
     old, new = tree(ref, repo=pre), tree(ref)
@@ -55,20 +59,31 @@ for ref, _ in refs:
     if newpaths != set(old): fails.append(f"{ref}: path sets differ"); continue
     changed = [p for p in old if old[p] != new[p]]
     ptrs = batch(sorted({new[p][1] for p in changed})) if changed else {}
+    todo = {(old[p][1], new[p][1]) for p in changed if not is_pointer(ptrs[new[p][1]])} - set(eol_ok)
+    olds = batch(sorted({o for o, _ in todo}), repo=pre) if todo else {}
+    for o, n in todo:
+        d = olds[o]; eol_ok[o, n] = b'\r\n' in d and is_text(d) and d.replace(b'\r\n', b'\n') == ptrs[n]
+    eol = []
     for p in changed:
         if old[p][0] != new[p][0]: fails.append(f"{ref}: {p!r} mode changed"); continue
+        if eol_ok.get((old[p][1], new[p][1])): eol.append(p); continue
         body = ptrs[new[p][1]].decode(errors='replace').splitlines()
         if len(body) != 3 or body[0] != 'version https://git-lfs.github.com/spec/v1' or not body[1].startswith('oid sha256:'):
-            fails.append(f"{ref}: {p!r} changed but is not an LFS pointer"); continue
+            fails.append(f"{ref}: {p!r} changed but is neither an LFS pointer nor the same text with LF endings"); continue
         oid = body[1][len('oid sha256:'):]; f = os.path.join(lfs, oid[:2], oid[2:4], oid)
         if not os.path.exists(f): fails.append(f"{ref}: {p!r} LFS object {oid} missing"); continue
         if os.path.getsize(f) != int(body[2].split()[1]): fails.append(f"{ref}: {p!r} size mismatch")
         if oid not in hashed: hashed[oid] = git('hash-object', f).decode().strip()
         if hashed[oid] != old[p][1]: fails.append(f"{ref}: {p!r} LFS object does not hash to original blob")
         if p not in attrs: fails.append(f"{ref}: {p!r} is a pointer but not in .gitattributes")
-    if attrs != set(changed): fails.append(f"{ref}: .gitattributes lists {len(attrs)} paths, {len(changed)} pointers")
-    nptr_total += len(changed); checked += 1
-    print(f"{ref}: {len(old)} paths, {len(changed)} LFS pointers", flush=True)
+    pointers = set(changed) - set(eol)
+    if attrs != pointers: fails.append(f"{ref}: .gitattributes lists {len(attrs)} paths, {len(pointers)} pointers")
+    if ref == 'refs/heads/main':
+        if pointers: fails.append(f"main has {len(pointers)} LFS pointers; the tip must have none")
+        crlf = [p for p, d in batch(sorted({new[p][1] for p in newpaths})).items() if b'\r\n' in d and is_text(d)]
+        if crlf: fails.append(f"main still has {len(crlf)} text blobs with CRLF")
+    nptr_total += len(pointers); neol_total += len(eol); checked += 1
+    print(f"{ref}: {len(old)} paths, {len(pointers)} LFS pointers, {len(eol)} with CRLF -> LF", flush=True)
 
 # history shape and metadata
 fmt = '--format=%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd%x00%B%x01'
@@ -81,7 +96,6 @@ def xlate(x):
         if o != n and o.encode() in x: x = x.replace(o.encode(), n.encode())
     return x
 if xlate(a) != b: fails.append("main: commit metadata/messages differ (beyond filter-repo's hash translation)")
-if git('rev-parse', 'main^{tree}', repo=pre) != git('rev-parse', 'main^{tree}'): fails.append("main tip tree changed")
 for ref, _ in refs:
     if ref.startswith('refs/tags/'):
         if git('cat-file', '-t', ref, repo=pre).strip() == b'tag':   # annotated: compare all but the object line
@@ -90,8 +104,10 @@ for ref, _ in refs:
             same = xlate(git('log', '-1', '--date=raw', fmt, ref, repo=pre)) == git('log', '-1', '--date=raw', fmt, ref)
         if not same: fails.append(f"{ref}: tag object / tagged commit metadata differs")
 
-print(f"\nrefs checked: {checked}   pointer paths verified: {nptr_total}   distinct LFS objects hashed: {len(hashed)}")
+print(f"\nrefs checked: {checked}   pointer paths verified: {nptr_total}   CRLF -> LF paths verified: {neol_total}   "
+      f"distinct LFS objects hashed: {len(hashed)}")
 lfsbytes = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(lfs) for f in fs)
 print(f"lfs/objects: {sum(len(fs) for _, _, fs in os.walk(lfs))} files, {lfsbytes / 1048576:.0f} MB")
-print("FAIL\n  " + "\n  ".join(fails[:50]) if fails else "ok   every tag byte-identical after LFS smudge; main unchanged")
+print("FAIL\n  " + "\n  ".join(fails[:50]) if fails else
+      "ok   every tag byte-identical after LFS smudge, apart from CRLF -> LF; main has no LFS pointers and no CRLF")
 sys.exit(1 if fails else 0)

@@ -75,6 +75,12 @@ Every commit ID changed in the rewrite. Three files next to this one help with t
   `python3 -I compare_commits.py zfin-commit-map.txt . . <old id> ...` (or `--sample 50`) compares each old commit
   with its new one, file by file, and tells apart differences only in line endings or whitespace from real ones.
 
+## Line endings
+
+The rewrite also replaced CRLF with LF in every text file, in every commit, so an old release checks out with LF
+endings where the original had CRLF; everything else is byte for byte the original (`compare_commits.py` shows which
+files differ only in line endings). The untouched originals are in the archive of the old repo.
+
 ## You don't need git-lfs at all
 
 Without git-lfs, old tags check out normally, and each LFS file shows up as a three-line text placeholder

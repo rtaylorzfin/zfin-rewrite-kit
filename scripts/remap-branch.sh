@@ -10,10 +10,13 @@
 #      the map's header, so this works even after origin/main has moved to the new history.
 #   2. Looks that commit up in the map (old -> new).
 #   3. Saves the branch as refs/pre-rewrite/<branch>, then runs
-#          git rebase --onto <new base> <old base> <branch>
+#          git -c core.autocrlf=input rebase -X renormalize --onto <new base> <old base> <branch>
+#      The new history has LF line endings where the old had CRLF; renormalize merges the branch's edits to
+#      such files without conflicts, and autocrlf=input gives the lines it added LF too. (A file the branch
+#      adds keeps its own endings.)
 #      Only the branch's own commits are replayed. Merge commits (e.g. "merge main into my branch") are
 #      dropped and their branch-side changes linearized, as plain `git rebase` does.
-#   4. Checks that the branch's changes against its base are unchanged.
+#   4. Checks that the branch's changes against its base are unchanged, apart from CRLF -> LF.
 # Undo: git checkout <branch> && git reset --hard refs/pre-rewrite/<branch>
 set -euo pipefail
 MAP=${1:?usage: remap-branch.sh <zfin-commit-map.txt> <branch> [<new-main-ref>]}; BR=${2:?branch name}; NEWMAIN=${3:-origin/main}
@@ -61,17 +64,17 @@ echo "  saved the old branch as refs/pre-rewrite/$BR"
 # Old commits in the new history store some files in Git LFS. The rebase never needs their contents, so the
 # LFS filter is switched off for it: no downloads (and no failure without git-lfs); LFS files stay pointers.
 NOLFS=(-c filter.lfs.process= -c filter.lfs.smudge=cat -c filter.lfs.clean=cat -c filter.lfs.required=false)
-if ! git "${NOLFS[@]}" rebase --onto "$new" "$old" "$BR"; then
+if ! git "${NOLFS[@]}" -c core.autocrlf=input rebase -X renormalize --onto "$new" "$old" "$BR"; then
     echo
     echo "The rebase stopped on a conflict. Resolve it and run 'git rebase --continue',"
     echo "or give up with 'git rebase --abort' (the branch is then unchanged)."
     exit 2
 fi
 
-# 4. same changes as before?
-if [ "$(git diff "$old" "refs/pre-rewrite/$BR" | git patch-id --stable | cut -d' ' -f1)" = \
-     "$(git diff "$new" "$BR" | git patch-id --stable | cut -d' ' -f1)" ]; then
-    echo "ok: '$BR' is now on the new history with exactly the same changes against its base"
+# 4. same changes as before? (CRs removed first: the new history has LF where the old had CRLF)
+if [ "$(git diff "$old" "refs/pre-rewrite/$BR" | tr -d '\r' | git patch-id --stable | cut -d' ' -f1)" = \
+     "$(git diff "$new" "$BR" | tr -d '\r' | git patch-id --stable | cut -d' ' -f1)" ]; then
+    echo "ok: '$BR' is now on the new history with the same changes against its base (line endings aside)"
 else
     echo "done: '$BR' is now on the new history. Its diff against the base differs from before (expected only if"
     echo "      you resolved conflicts, or the branch started inside an old PR branch that was merged). Review with:"

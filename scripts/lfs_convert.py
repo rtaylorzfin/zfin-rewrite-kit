@@ -1,4 +1,5 @@
-"""Convert specific historical blobs to Git LFS pointers, in place, with git-filter-repo.
+"""Convert specific historical blobs to Git LFS pointers, and every other text blob's CRLF line endings to LF,
+in place, with git-filter-repo.
 
 Usage (cwd = the repo to rewrite; run on a disposable copy):
     python3 -I lfs_convert.py [--no-attributes] <blob-id-list> [<filter-repo script path>]
@@ -15,6 +16,9 @@ filter.lfs.required=true); restoring an old release's binaries is opt-in (restor
   tree (`/path filter=lfs diff=lfs merge=lfs -text`), so checking out an old tag with git-lfs
   installed restores the real files. Commits without converted files get no .gitattributes,
   so new jars are NOT routed to LFS automatically. (This repo has never had a .gitattributes.)
+- Every other blob that is text (no NUL byte in its first 8000 bytes, git's own test) and contains CRLF has
+  each CRLF replaced by LF, in every commit, so history starts out with LF endings and blame looks through
+  commits that only changed line endings. Blobs moved to LFS keep their original bytes.
 - filter-repo writes .git/filter-repo/commit-map (old -> new) as usual.
 """
 import sys, os, shutil, subprocess, hashlib, importlib.util, importlib.machinery
@@ -38,10 +42,10 @@ if not hasattr(fr,'FilteringOptions'):
 gitdir=subprocess.run(['git','rev-parse','--absolute-git-dir'],capture_output=True,text=True).stdout.strip()
 lfsdir=os.path.join(gitdir,'lfs','objects')
 converted_marks=set()   # filter-repo internal blob ids that now hold a pointer
-nconv=0; nbytes=0
+nconv=0; nbytes=0; neol=0
 
 def blob_cb(blob,_meta):
-    global nconv,nbytes
+    global nconv,nbytes,neol
     if blob.original_id and blob.original_id.decode() in ids:
         data=blob.data; oid=hashlib.sha256(data).hexdigest()
         d=os.path.join(lfsdir,oid[:2],oid[2:4]); os.makedirs(d,exist_ok=True)
@@ -50,6 +54,8 @@ def blob_cb(blob,_meta):
             with open(p,'wb') as f: f.write(data)
         blob.data=f"version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {len(data)}\n".encode()
         converted_marks.add(blob.id); nconv+=1; nbytes+=len(data)
+    elif b'\r\n' in blob.data and b'\0' not in blob.data[:8000]:
+        blob.data=blob.data.replace(b'\r\n',b'\n'); neol+=1
 
 state={}   # commit (new filter-repo id) -> frozenset of converted paths in its tree
 attr_blob={}  # content -> blob mark
@@ -80,4 +86,4 @@ def commit_cb(commit,_meta):
 args=fr.FilteringOptions.parse_args(['--force','--prune-empty','never','--prune-degenerate','never'],error_on_empty=False)
 filt=fr.RepoFilter(args,blob_callback=blob_cb,commit_callback=None if NOATTR else commit_cb)
 filt.run()
-print(f"converted {nconv} blob occurrences, {nbytes/1048576:.0f} MB into {lfsdir}")
+print(f"converted {nconv} blob occurrences, {nbytes/1048576:.0f} MB into {lfsdir}; CRLF -> LF in {neol} text blobs")
