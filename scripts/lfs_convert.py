@@ -16,7 +16,7 @@ filter.lfs.required=true); restoring an old release's binaries is opt-in (restor
   tree (`/path filter=lfs diff=lfs merge=lfs -text`), so checking out an old tag with git-lfs
   installed restores the real files. Commits without converted files get no .gitattributes,
   so new jars are NOT routed to LFS automatically. (This repo has never had a .gitattributes.)
-- Every other blob that is text (no NUL byte in its first 8000 bytes, git's own test) gets LF line endings, in
+- Every other blob that is text (no NUL byte and few non-printable bytes, git's own test) gets LF line endings, in
   every commit: each CRLF becomes LF, and in a file whose lines end in CR alone (classic Mac, no LF anywhere)
   each CR becomes LF. A lone CR inside a file with LF lines is data and stays. History then starts out with LF
   endings, and blame looks through commits that only changed line endings. Blobs moved to LFS keep their
@@ -43,8 +43,12 @@ if not hasattr(fr,'FilteringOptions'):
 
 gitdir=subprocess.run(['git','rev-parse','--absolute-git-dir'],capture_output=True,text=True).stdout.strip()
 lfsdir=os.path.join(gitdir,'lfs','objects')
+# bytes git counts as non-printable when it decides whether a file is text (convert.c: gather_stats)
+NONPRINTABLE = bytes(c for c in range(32) if c not in (8, 9, 10, 12, 13, 27)) + b'\x7f'
 def to_lf(data):   # the rewrite's line-ending fix (lfs_convert.py): CRLF -> LF, or classic-Mac CR -> LF
-    if b'\0' in data[:8000]: return data
+    # binary by git's own test: a NUL, or more than 1 non-printable byte per 128 printable ones
+    nonprintable = len(data) - len(data.translate(None, NONPRINTABLE))
+    if b'\0' in data or (len(data) - nonprintable) >> 7 < nonprintable: return data
     if b'\r\n' in data: return data.replace(b'\r\n', b'\n')
     if b'\r' in data and b'\n' not in data: return data.replace(b'\r', b'\n')
     return data

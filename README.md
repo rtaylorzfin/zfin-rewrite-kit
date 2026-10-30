@@ -207,7 +207,7 @@ A few files (4 Java files, `term_stopwords.txt`, some old load CSVs) end their l
 format, which git treats as binary and as one long line; their CRs become LF too.
 Then no commit changes line endings, and blame credits each line to the commit that really wrote it.
 
-- Text means no NUL byte in the first 8000 bytes (git's own test). Binary files are untouched, and so are files
+- Text means no NUL byte and at most 1 non-printable byte per 128 printable ones (git's own test). Binary files are untouched, and so are files
   moved to LFS (they keep their original bytes). A lone CR inside a file whose lines end in LF is data (e.g. an
   empty field in `1085/ghost/drclonedis`) and is left alone.
 - Every commit is kept, even one that only changed line endings and is now empty, so the commit map stays one to one.
