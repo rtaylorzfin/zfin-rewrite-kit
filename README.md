@@ -224,6 +224,29 @@ Then no commit changes line endings, and blame credits each line to the commit t
   added to a CRLF file land with LF endings. A file the branch adds keeps its own endings (the `.gitattributes`
   above converts it on its next commit).
 
+## Tags, GitHub Releases and Zenodo
+
+ZFIN/zfin's GitHub Releases (v1175 onward) are archived by Zenodo, through a webhook subscribed only to `release`
+events. Zenodo makes a new version for a `release` event with action `published`, `released` or `created` on a
+non-draft release, and rejects a release id it has already received. At the cutover, move the `vNNNN` tags in
+place, after the branches:
+
+    git push --force origin 'refs/tags/v*'
+
+Never delete a tag, and never delete and recreate a GitHub Release. A simulation on a throwaway repo (2026-11-04)
+with a webhook for all events showed:
+
+- Force-pushing main and then the tags in place sends only `push` events. The releases keep their ids and
+  publish dates and stay published; Zenodo sees nothing.
+- Deleting a tag sends `delete` and `release unpublished`, and turns its release into a draft. Pushing the tag
+  back sends only `push` and `create`: the release stays a draft, hidden from the Releases page.
+  `gh release edit vNNNN --draft=false` republishes it, sending `published` with the same release id (the
+  simulation didn't go that far).
+
+After the push, check that every release is still published (`false` on each line):
+
+    gh api repos/ZFIN/zfin/releases --jq '.[]|"\(.tag_name) \(.draft)"'
+
 ## 7. Clean up
 
     rm -rf $WORK_DIR
