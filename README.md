@@ -260,7 +260,7 @@ branches they want carried: only branches on GitHub at the clone in C2 are carri
 is moved afterwards with `remap-branch.sh`.
 
 **C2. Build.** Steps 3-6, with a clone made after the freeze started. Check the pre-flight's DROP lines. Keep
-`$MIRROR_REPO` until the as-is archive of the old repo is confirmed: after C4 it is the full copy of what GitHub had.
+`$MIRROR_REPO`: after C4 it is the only full copy of what GitHub had, until C7 archives it.
 
 **C3. Check that GitHub hasn't changed since the clone.**
 
@@ -332,6 +332,17 @@ active afterwards. Feature branches stay unprotected, so developers can still fo
     rsync -a $FINAL_REPO/ cell:/research/zcentral/Vault/git/zfin.lfs.git/
     /research/zcentral/Vault/git/zfin.lfs.git/check_lfs_store.sh /research/zcentral/Vault/git/zfin.lfs.git --pointers
 
+Copy the old repo as it was too: `$MIRROR_REPO` is GitHub's branches and tags as of the C2 clone, and after C4 the
+only full copy of them. Name it after the day of that clone, and check that its refs arrived intact:
+
+    # the day of the C2 clone, e.g. zfin.2026-12-01.git
+    OLD_ARCHIVE=/research/zcentral/Vault/git/zfin.YYYY-MM-DD.git
+    rsync -a $MIRROR_REPO/ cell:$OLD_ARCHIVE/
+
+    # on a machine with the share mounted: no output means every branch and tag arrived, and git finds no damage
+    diff <(git -C $MIRROR_REPO for-each-ref) <(git -C $OLD_ARCHIVE for-each-ref)
+    git -C $OLD_ARCHIVE fsck --connectivity-only --no-progress
+
 Then end the freeze, point everyone to the next section, and open the `.gitattributes` pull request (see
 "Line endings").
 
@@ -401,7 +412,7 @@ Undo either move with `git checkout $BR && git reset --hard refs/pre-rewrite/$BR
     rm -rf $WORK_DIR
 
 Before the cutover, nothing is written outside `$WORK_DIR`, and nothing is pushed anywhere. After the cutover, clean
-up only once the NFS archive is checked (C7) and the old repo is archived as is.
+up only once both NFS copies are checked (C7).
 
 ## 8. When the conversion is done: delete this repo
 

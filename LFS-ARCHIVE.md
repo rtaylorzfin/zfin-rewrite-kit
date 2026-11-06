@@ -79,7 +79,8 @@ Every commit ID changed in the rewrite. Three files next to this one help with t
 
 The rewrite also replaced CRLF with LF in every text file, in every commit, so an old release checks out with LF
 endings where the original had CRLF; everything else is byte for byte the original (`compare_commits.py` shows which
-files differ only in line endings). The untouched originals are in the archive of the old repo.
+files differ only in line endings). The untouched originals are in the archive of the old repo, `zfin.<date>.git`
+next to this one (named after the day it was cloned from GitHub, just before the cutover).
 
 ## You don't need git-lfs at all
 
