@@ -229,9 +229,9 @@ Then no commit changes line endings, and blame credits each line to the commit t
 ZFIN/zfin's GitHub Releases (v1175 onward) are archived by Zenodo, through a webhook subscribed only to `release`
 events. Zenodo makes a new version for a `release` event with action `published`, `released` or `created` on a
 non-draft release, and rejects a release id it has already received. At the cutover, move the `vNNNN` tags in
-place, after the branches:
+place, after the branches (step C4 below):
 
-    git push --force origin 'refs/tags/v*'
+    git -C $FINAL_REPO push --force $ZFIN_URL 'refs/tags/v*:refs/tags/v*'
 
 Never delete a tag, and never delete and recreate a GitHub Release. A simulation on a throwaway repo (2026-11-04)
 with a webhook for all events showed:
@@ -247,11 +247,161 @@ After the push, check that every release is still published (`false` on each lin
 
     gh api repos/ZFIN/zfin/releases --jq '.[]|"\(.tag_name) \(.draft)"'
 
+## Cutover: replace ZFIN/zfin
+
+Steps 3-6 change nothing on GitHub. The cutover runs them once more on a fresh clone, pushes the result over
+ZFIN/zfin and archives it; then each developer moves their unmerged work across ("Moving work from the old history"
+below). Run it from a persistent `$WORK_DIR` (step 2), with git-lfs installed (`brew install git-lfs` /
+`sudo apt install git-lfs`) and push rights to ZFIN/zfin. ZFIN/zfin has no branch or tag protection yet, so the force
+pushes need no settings changed; C6 adds it once they are done.
+
+**C1. Freeze.** Announce a window with no pushes or merges to ZFIN/zfin. Before it starts, everyone pushes the
+branches they want carried: only branches on GitHub at the clone in C2 are carried (minus `DROP`). Anything else
+is moved afterwards with `remap-branch.sh`.
+
+**C2. Build.** Steps 3-6, with a clone made after the freeze started. Check the pre-flight's DROP lines. Keep
+`$MIRROR_REPO` until the as-is archive of the old repo is confirmed: after C4 it is the full copy of what GitHub had.
+
+**C3. Check that GitHub hasn't changed since the clone.**
+
+    ZFIN_URL=git@github.com:ZFIN/zfin.git
+    FINAL_REPO=$WORK_DIR/zfin.linear-fp-lfs.git
+
+    # no output: every branch and tag on GitHub is as cloned. Any output means someone pushed: go back to C2
+    diff <(git -C $MIRROR_REPO for-each-ref --format='%(objectname) %(refname)' refs/heads refs/tags | sort -k2) \
+         <(git ls-remote --refs $ZFIN_URL | awk '$2 ~ "^refs/(heads|tags)/" {print $1, $2}' | sort -k2)
+
+**C4. Push.** The LFS objects first, so no pointer on GitHub is ever without its object, then the branches and
+archive tags, and the `vNNNN` tags last (see "Tags, GitHub Releases and Zenodo": moved in place, never deleted).
+
+    # LFS objects (the bare repo has no git-lfs hook, so git push alone would not send them); safe to rerun
+    git -C $FINAL_REPO lfs push --all $ZFIN_URL
+
+    # main, the carried feature branches and the archive/release-NNNN tags
+    git -C $FINAL_REPO push --force $ZFIN_URL 'refs/heads/*:refs/heads/*' 'refs/tags/archive/*:refs/tags/archive/*'
+
+    # the vNNNN tags, then check every release is still published (false on each line)
+    git -C $FINAL_REPO push --force $ZFIN_URL 'refs/tags/v*:refs/tags/v*'
+    gh api --paginate repos/ZFIN/zfin/releases --jq '.[]|"\(.tag_name) \(.draft)"'
+
+**C5. Check GitHub against the final repo.**
+
+    # no '<' lines: every ref of the new repo is on GitHub as pushed.
+    # '>' lines: refs the push didn't touch, still on the old history
+    diff <(git -C $FINAL_REPO for-each-ref --format='%(objectname) %(refname)' | sort -k2) \
+         <(git ls-remote --refs $ZFIN_URL | awk '$2 ~ "^refs/(heads|tags)/" {print $1, $2}' | sort -k2)
+
+The `>` lines are `master`, the `release-NNNN` branches (now `archive/release-NNNN` tags), the `DROP` branches and
+the tags other than `v*`/`archive/release-*`. Each keeps the old history reachable on GitHub and offers it as a base
+for new work. Delete the ones the team doesn't want kept, after their owners have moved any work they still need
+(next section; that works from an old clone even after the delete):
+
+    git push $ZFIN_URL --delete refs/heads/<name>
+
+Deleting a branch with an open pull request closes that pull request. Never delete a `vNNNN` tag (none is in this
+list: they are all in the new repo).
+
+**C6. Protect main and the release tags.** With the history replaced, nothing should force-push or delete `main`
+again; a `git push --force` from an old clone would put the old history back. Nor should a `vNNNN` tag move or
+disappear (see "Tags, GitHub Releases and Zenodo"), or an `archive/release-NNNN` tag change. Two rulesets, with no
+bypass, so they hold for admins too (admin rights needed to add them):
+
+    # main: no force pushes, no deletion (ordinary pushes and merged pull requests still work)
+    gh api -X POST repos/ZFIN/zfin/rulesets --input - <<'JSON'
+    {"name": "main: no force push or delete", "target": "branch", "enforcement": "active",
+     "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+     "rules": [{"type": "non_fast_forward"}, {"type": "deletion"}]}
+    JSON
+
+    # vNNNN and archive/release-NNNN tags: no moving, no deletion (creating new ones, e.g. by a new Release, still works)
+    gh api -X POST repos/ZFIN/zfin/rulesets --input - <<'JSON'
+    {"name": "release tags: no move or delete", "target": "tag", "enforcement": "active",
+     "conditions": {"ref_name": {"include": ["refs/tags/v*", "refs/tags/archive/*"], "exclude": []}},
+     "rules": [{"type": "update"}, {"type": "deletion"}]}
+    JSON
+
+    # check: both listed as active
+    gh api repos/ZFIN/zfin/rulesets --jq '.[]|"\(.name) \(.target) \(.enforcement)"'
+
+To change something later, set a ruleset's enforcement to disabled under Settings -> Rules -> Rulesets, and back to
+active afterwards. Feature branches stay unprotected, so developers can still force-push them (next section).
+
+**C7. Archive and announce.** Copy the final repo, which holds the LFS objects, the commit map, `remap-branch.sh`,
+`compare_commits.py` and `LFS-ARCHIVE.md`, to the NFS archive, and check it there on a machine with the share mounted:
+
+    rsync -a $FINAL_REPO/ cell:/research/zcentral/Vault/git/zfin.lfs.git/
+    /research/zcentral/Vault/git/zfin.lfs.git/check_lfs_store.sh /research/zcentral/Vault/git/zfin.lfs.git --pointers
+
+Then end the freeze, point everyone to the next section, and open the `.gitattributes` pull request (see
+"Line endings").
+
+### Moving work from the old history (developers)
+
+Every commit id changed, so a branch in a clone made before the cutover is still based on the old history.
+Never `git pull` or `git merge` between the two: they share only their first commit, so a merge drags the whole old
+history (and its CRLF files) back in, and the pull request would show thousands of commits.
+
+No local work that wasn't on GitHub at the cutover? Nothing to move: your pushed branches were carried and are on
+GitHub already. Clone afresh, or do step 6 below in your old clone.
+
+Otherwise, work in your old clone (it has the old commits the script needs; a fresh clone doesn't):
+
+    # 1. the map and the script, from the NFS archive
+    scp cell:/research/zcentral/Vault/git/zfin.lfs.git/{zfin-commit-map.txt,remap-branch.sh} ~/
+    MAP=~/zfin-commit-map.txt
+
+    # 2. fetch the new history; --force because the vNNNN and archive/release-NNNN tags moved,
+    #    and git won't move an existing tag without it
+    git fetch --force --tags origin
+
+    # 3. for each branch with your work: was it carried as is?
+    BR=my-branch
+    grep "^$(git rev-parse $BR) " $MAP
+
+What step 3 prints decides step 4:
+
+- A line ending in `branch-$BR` (or `branch-$BR-exact-trees`): GitHub had exactly this branch, and it was carried.
+  Take the carried version:
+
+      git update-ref refs/pre-rewrite/$BR $BR
+      git checkout $BR && git reset --hard origin/$BR
+
+- A line of any other kind (`fp`, `release-NNNN`, ...): the branch has no commits of its own; it is already in main
+  or a release. Delete it, and branch new work from `origin/main`.
+- Nothing: the branch has commits GitHub didn't have at the cutover (unpushed commits, a `DROP` branch, a branch
+  made after the freeze). Move it:
+
+      # 4. rebase the branch's own commits onto the new history; saves the old branch as refs/pre-rewrite/$BR
+      bash ~/remap-branch.sh $MAP $BR
+
+  It rebases with `-X renormalize`, so edits to files whose CRLF became LF don't conflict, and ends with `ok` when
+  the branch's changes are the same as before, apart from line endings. If it stops on a conflict, resolve it and
+  `git rebase --continue`, or `git rebase --abort`. If it says the branch started from release commits and the
+  pull request goes to main, run `git rebase origin/main` next. If the branch was carried and you only had extra
+  commits on top, the result holds the carried commits plus yours; if `git log $BR..origin/$BR` shows commits,
+  someone pushed to the carried branch since: `git rebase origin/$BR` before pushing.
+
+Then, for either of the first and third cases:
+
+    # 5. check: only your own commits. Thousands of lines mean the branch is still on the old history; don't push
+    git log --oneline origin/main..$BR
+
+    # push (updates an open pull request for $BR), or open a new one
+    git push --force-with-lease origin $BR
+    gh pr create --repo ZFIN/zfin --base main --head $BR
+
+Undo either move with `git checkout $BR && git reset --hard refs/pre-rewrite/$BR`. Once every branch is moved:
+
+    # 6. your main: reset it onto the new main (don't pull), and drop remote-tracking refs GitHub no longer has
+    git checkout main && git reset --hard origin/main
+    git fetch --prune origin
+
 ## 7. Clean up
 
     rm -rf $WORK_DIR
 
-Nothing is written outside `$WORK_DIR`, and nothing is pushed anywhere.
+Before the cutover, nothing is written outside `$WORK_DIR`, and nothing is pushed anywhere. After the cutover, clean
+up only once the NFS archive is checked (C7) and the old repo is archived as is.
 
 ## 8. When the conversion is done: delete this repo
 

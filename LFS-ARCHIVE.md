@@ -70,7 +70,7 @@ Every commit ID changed in the rewrite. Three files next to this one help with t
 - `zfin-commit-map.txt`: one line per old commit, `<old id> <new id> <kind>`. Find an old ID with
   `grep '^<old-id>' zfin-commit-map.txt`.
 - `remap-branch.sh`: moves a branch made on the old history onto the new one. Run it in an old clone;
-  its header and `COWORKER-GUIDE.md` explain how.
+  its header explains how.
 - `compare_commits.py`: shows that old commits kept their files. In an old clone with the new history fetched,
   `python3 -I compare_commits.py zfin-commit-map.txt . . <old id> ...` (or `--sample 50`) compares each old commit
   with its new one, file by file, and tells apart differences only in line endings or whitespace from real ones.
