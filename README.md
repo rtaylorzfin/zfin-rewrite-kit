@@ -285,7 +285,7 @@ archive tags, and the `vNNNN` tags last (see "Tags, GitHub Releases and Zenodo":
     git -C $FINAL_REPO push --force $ZFIN_URL 'refs/tags/v*:refs/tags/v*'
     gh api --paginate repos/ZFIN/zfin/releases --jq '.[]|"\(.tag_name) \(.draft)"'
 
-**C5. Check GitHub against the final repo.**
+**C5. Check GitHub against the final repo, and delete the old refs.**
 
     # no '<' lines: every ref of the new repo is on GitHub as pushed.
     # '>' lines: refs the push didn't touch, still on the old history
@@ -294,13 +294,37 @@ archive tags, and the `vNNNN` tags last (see "Tags, GitHub Releases and Zenodo":
 
 The `>` lines are `master`, the `release-NNNN` branches (now `archive/release-NNNN` tags), the `DROP` branches and
 the tags other than `v*`/`archive/release-*`. Each keeps the old history reachable on GitHub and offers it as a base
-for new work. Delete the ones the team doesn't want kept, after their owners have moved any work they still need
-(next section; that works from an old clone even after the delete):
+for new work, and a fresh clone still downloads all of it. Delete them once the check above shows no `<` lines:
 
-    git push $ZFIN_URL --delete refs/heads/<name>
+    # the refs GitHub has and the new repo doesn't: all on the old history
+    comm -13 <(git -C $FINAL_REPO for-each-ref --format='%(refname)' | sort) \
+             <(git ls-remote --refs $ZFIN_URL | awk '$2 ~ "^refs/(heads|tags)/" {print $2}' | sort) \
+             > $WORK_DIR/old-refs.txt
 
-Deleting a branch with an open pull request closes that pull request. Never delete a `vNNNN` tag (none is in this
-list: they are all in the new repo).
+    # review, and remove any line the team wants kept for now (no refs/tags/v* line should be there)
+    cat $WORK_DIR/old-refs.txt
+
+    # delete them
+    git -C $FINAL_REPO push $ZFIN_URL --delete $(cat $WORK_DIR/old-refs.txt)
+
+Before deleting:
+
+- The `release-NNNN` branch of the release in production, and of any release not yet deployed, is needed for
+  hotfixes. Delete it here, then recreate it on the new history from its archive tag (the tag is already on GitHub):
+
+      git -C $FINAL_REPO push $ZFIN_URL 'refs/tags/archive/release-NNNN^{commit}:refs/heads/release-NNNN'
+
+- Deleting a branch with an open pull request closes that pull request. Owners of `DROP` branches can move their
+  work afterwards: `remap-branch.sh` works from an old clone even after the delete (next section).
+- Never delete a `vNNNN` tag (none is in this list: they are all in the new repo).
+
+Then check: the diff above prints only the `release-NNNN` branches you recreated, and a fresh clone holds only the
+new history (about 60 MiB, not 3 GB):
+
+    git clone -q --bare $ZFIN_URL $WORK_DIR/check.git && du -sh $WORK_DIR/check.git && rm -rf $WORK_DIR/check.git
+
+GitHub still keeps the old commits reachable from the hidden `refs/pull/NNN/head` refs of past pull requests; no push
+can delete those, and a clone doesn't fetch them.
 
 **C6. Protect main and the release tags.** With the history replaced, nothing should force-push or delete `main`
 again; a `git push --force` from an old clone would put the old history back. Nor should a `vNNNN` tag move or
