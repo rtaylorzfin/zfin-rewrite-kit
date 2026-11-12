@@ -27,6 +27,7 @@ The build is deterministic, so everything upstream hasn't changed since then com
 | `remap-branch.sh` | Not run by the pipeline; copied into the final repo next to the commit map. Coworkers use it after the cutover to move a branch from their old clone onto the new history. |
 
 `LFS-ARCHIVE.md` is the team's guide to the NFS copy of the LFS objects; the pipeline copies it into the final repo.
+`MOVING-FROM-OLD-HISTORY.md` is the developers' guide to moving their branches onto the new history after the cutover.
 `expected/refs-pre-lfs.txt` holds the trial build's refs before its LFS step, for the comparison in step 5.
 
 ## 1. Tools
@@ -49,7 +50,7 @@ Disk: about 10 GB free (3 GB clone, 2 GB build input, 3.5 GB build).
     WORK_DIR=/tmp/zfin-rewrite-test
     mkdir -p $WORK_DIR
 
-    # this repo: README.md, LFS-ARCHIVE.md, scripts/ (11), expected/refs-pre-lfs.txt
+    # this repo: README.md, LFS-ARCHIVE.md, MOVING-FROM-OLD-HISTORY.md, scripts/ (11), expected/refs-pre-lfs.txt
     KIT_DIR=$WORK_DIR/zfin-rewrite-kit
     git clone https://github.com/rtaylorzfin/zfin-rewrite-kit.git $KIT_DIR
 
@@ -348,64 +349,9 @@ Then end the freeze, point everyone to the next section, and open the `.gitattri
 
 ### Moving work from the old history (developers)
 
-Every commit id changed, so a branch in a clone made before the cutover is still based on the old history.
-Never `git pull` or `git merge` between the two: they share only their first commit, so a merge drags the whole old
-history (and its CRLF files) back in, and the pull request would show thousands of commits.
-
-No local work that wasn't on GitHub at the cutover? Nothing to move: your pushed branches were carried and are on
-GitHub already. Clone afresh, or do step 6 below in your old clone.
-
-Otherwise, work in your old clone (it has the old commits the script needs; a fresh clone doesn't):
-
-    # 1. the map and the script, from the NFS archive
-    scp cell:/research/zcentral/Vault/git/zfin.lfs.git/{zfin-commit-map.txt,remap-branch.sh} ~/
-    MAP=~/zfin-commit-map.txt
-
-    # 2. fetch the new history; --force because the vNNNN and archive/release-NNNN tags moved,
-    #    and git won't move an existing tag without it
-    git fetch --force --tags origin
-
-    # 3. for each branch with your work: was it carried as is?
-    BR=my-branch
-    grep "^$(git rev-parse $BR) " $MAP
-
-What step 3 prints decides step 4:
-
-- A line ending in `branch-$BR` (or `branch-$BR-exact-trees`): GitHub had exactly this branch, and it was carried.
-  Take the carried version:
-
-      git update-ref refs/pre-rewrite/$BR $BR
-      git checkout $BR && git reset --hard origin/$BR
-
-- A line of any other kind (`fp`, `release-NNNN`, ...): the branch has no commits of its own; it is already in main
-  or a release. Delete it, and branch new work from `origin/main`.
-- Nothing: the branch has commits GitHub didn't have at the cutover (unpushed commits, a `DROP` branch, a branch
-  made after the freeze). Move it:
-
-      # 4. rebase the branch's own commits onto the new history; saves the old branch as refs/pre-rewrite/$BR
-      bash ~/remap-branch.sh $MAP $BR
-
-  It rebases with `-X renormalize`, so edits to files whose CRLF became LF don't conflict, and ends with `ok` when
-  the branch's changes are the same as before, apart from line endings. If it stops on a conflict, resolve it and
-  `git rebase --continue`, or `git rebase --abort`. If it says the branch started from release commits and the
-  pull request goes to main, run `git rebase origin/main` next. If the branch was carried and you only had extra
-  commits on top, the result holds the carried commits plus yours; if `git log $BR..origin/$BR` shows commits,
-  someone pushed to the carried branch since: `git rebase origin/$BR` before pushing.
-
-Then, for either of the first and third cases:
-
-    # 5. check: only your own commits. Thousands of lines mean the branch is still on the old history; don't push
-    git log --oneline origin/main..$BR
-
-    # push (updates an open pull request for $BR), or open a new one
-    git push --force-with-lease origin $BR
-    gh pr create --repo ZFIN/zfin --base main --head $BR
-
-Undo either move with `git checkout $BR && git reset --hard refs/pre-rewrite/$BR`. Once every branch is moved:
-
-    # 6. your main: reset it onto the new main (don't pull), and drop remote-tracking refs GitHub no longer has
-    git checkout main && git reset --hard origin/main
-    git fetch --prune origin
+Every commit id changed, so a branch in a clone made before the cutover is still based on the old history. The steps
+for developers (which branches were carried, moving the rest with `remap-branch.sh`, resetting main) are in
+[MOVING-FROM-OLD-HISTORY.md](MOVING-FROM-OLD-HISTORY.md): link to it when announcing the cutover.
 
 ## 7. Clean up
 
@@ -416,9 +362,11 @@ up only once both NFS copies are checked (C7).
 
 ## 8. When the conversion is done: delete this repo
 
-Once ZFIN/zfin has been replaced with the rewritten history (the cutover), this kit is no longer needed. Deleting it is
-tracked in ZFIN-10584 (due 2027-01-04); before deleting, attach a zip of the final kit to ZFIN-10473. The
-scripts stay in the analysis folder and the commit map and `remap-branch.sh` in the NFS archive.
+Once ZFIN/zfin has been replaced with the rewritten history (the cutover) and every branch still in use has been
+moved onto it, this kit is no longer needed. Keep it until then: the cutover announcement links to
+`MOVING-FROM-OLD-HISTORY.md`. Deleting it is tracked in ZFIN-10584 (due 2027-01-04); before deleting, attach a zip of
+the final kit to ZFIN-10473. The scripts stay in the analysis folder and the commit map and `remap-branch.sh` in the
+NFS archive.
 
     # deleting needs the delete_repo scope (one time)
     gh auth refresh -h github.com -s delete_repo
